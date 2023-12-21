@@ -1,9 +1,9 @@
 import streamlit as st
-from langchain.chat_models import ChatOpenAI
+from langchain.chat_models import ChatOllama
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
-from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
+from langchain.embeddings import OllamaEmbeddings, CacheBackedEmbeddings
 from langchain.storage import LocalFileStore
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
@@ -30,7 +30,8 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message_box.markdown(self.message)
 
 
-llm = ChatOpenAI(
+llm = ChatOllama(
+    model="llama2-uncensored:7b",
     temperature=0.1, 
     streaming=True,
     callbacks=[
@@ -60,7 +61,9 @@ def embed_file(file):
     for doc in docs:
         doc.page_content = doc.page_content.replace('\n', '')
 
-    embeddings = OpenAIEmbeddings()
+    embeddings = OllamaEmbeddings(
+        model="llama2-uncensored:7b"
+    )
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
 
     vectorstore = FAISS.from_documents(docs, cached_embeddings)
@@ -83,15 +86,24 @@ def paint_history():
 def format_docs(docs):
     return "\n\n".join(document.page_content for document in docs)
 
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system","""
-        Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
+# prompt = ChatPromptTemplate.from_messages(
+#     [
+#         ("system","""
+#         Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
         
-        Context: {context}
-        """),
-        ("human","{question}")
-    ]
+#         Context: {context}
+#         """),
+#         ("human","{question}")
+#     ]
+# )
+
+
+prompt = ChatPromptTemplate.from_template(
+    """Answer the question using ONLY the following context and not your training data. If you don't know the answer just say you don't know. DON'T make anything up.
+    
+    Context: {context}
+    Question:{question}
+    """
 )
 
 st.title("Private GPT")
