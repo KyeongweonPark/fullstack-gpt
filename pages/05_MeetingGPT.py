@@ -10,13 +10,39 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import StrOutputParser
+from langchain.vectorstores.faiss import FAISS
+from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
+from langchain.storage import LocalFileStore
+from langchain.schema.runnable.passthrough import RunnablePassthrough
+from langchain.schema.runnable.base import RunnableLambda
+
+
+has_transcript = os.path.exists("./.cache/video_sample.txt")
+
+
+def format_docs(docs):
+    return "\n\n".join(document.page_content for document in docs)
+
+@st.cache_data()
+def embed_file(file_path):
+    cache_dir = LocalFileStore(f"./.cache/embeddings/{file_path}")
+    splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        chunk_size=600,
+        chunk_overlap=100,
+    )
+
+    loader = TextLoader(file_path)
+    docs = loader.load_and_split(text_splitter=splitter)
+    embeddings = OpenAIEmbeddings()
+    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
+
+    vectorstore = FAISS.from_documents(docs, cached_embeddings)
+    retriever = vectorstore.as_retriever() 
+    return retriever
 
 llm = ChatOpenAI(
     temperature=0.1
 )
-
-has_transcript = os.path.exists("./.cache/video_sample.txt")
-
 
 
 @st.cache_data()
@@ -32,6 +58,14 @@ def transcribe_chunks(chunk_folder, destination):
                 audio_file,
             )
             text_file.write(transcript["text"])
+
+@st.cache_data()
+def write_summry(summary_path, text):
+    has_summary = os.path.exists(summary_path)
+    if has_summary:
+        return
+    with open(summary_path, "w") as text_file:
+        text_file.write(text)
 
 @st.cache_data()
 def extract_audio_from_video(video_path):
@@ -92,6 +126,8 @@ if video:
         video_path =f"./.cache/{video.name}"
         audio_path = video_path.replace("mp4","mp3")
         transcript_path = video_path.replace("mp4", "txt")
+        summary_path_without_extension, _ = os.path.splitext(video_path)
+        summary_path = f"{summary_path_without_extension}_summary.txt"
         with open(video_path, "wb") as f:
             f.write(video_content)
         status.update(label="Extracting audio...")
@@ -111,6 +147,7 @@ if video:
     with summary_tab:
         start = st.button("Generate summary")
 
+    
         if start:
             loader = TextLoader(transcript_path)
             splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
@@ -156,3 +193,32 @@ if video:
                     })
                     st.write(summary)
             st.write(summary) 
+
+            write_summry(summary_path, summary)
+    with qa_tab:
+        retriever = embed_file(transcript_path)
+
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """
+            Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
+            
+            Context: {context}
+            """,
+                ),
+                ("human", "{question}"),
+            ]
+        )
+
+        message = st.text_input("Ask anything about your video...")
+
+        if message:
+            chain = {
+                "context": retriever | RunnableLambda(format_docs),
+                "question": RunnablePassthrough(),
+            } | qa_prompt | llm
+        
+            with st.chat_message("ai"):
+                chain.invoke(message).content
